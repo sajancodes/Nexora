@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Portfolio, Stock } from '../types';
 import { Wallet, History, ArrowUpRight, ArrowDownRight, User, Edit2, Check, X } from 'lucide-react';
@@ -8,12 +7,13 @@ interface PortfolioViewProps {
   portfolio: Portfolio;
   stocks: Stock[];
   onTrade: (type: 'BUY' | 'SELL', symbol: string, quantity: number, price: number) => void;
+  onCancelLimitOrder: (orderId: string) => void;
   user: FirebaseUser | null;
   onUpdateName: (newName: string) => Promise<void>;
 }
 
-const PortfolioView: React.FC<PortfolioViewProps> = ({ portfolio, stocks, user, onUpdateName }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'HOLDINGS' | 'HISTORY'>('HOLDINGS');
+const PortfolioView: React.FC<PortfolioViewProps> = ({ portfolio, stocks, user, onUpdateName, onCancelLimitOrder }) => {
+  const [activeSubTab, setActiveSubTab] = useState<'HOLDINGS' | 'OPEN_ORDERS' | 'HISTORY'>('HOLDINGS');
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState(user?.displayName || '');
   const [isSaving, setIsSaving] = useState(false);
@@ -26,155 +26,197 @@ const PortfolioView: React.FC<PortfolioViewProps> = ({ portfolio, stocks, user, 
     return portfolio.holdings.reduce((acc, h) => acc + (h.quantity * getStockPrice(h.symbol)), 0);
   };
 
+  const calculateReservedCash = () => {
+    return (portfolio.limitOrders || [])
+      .filter(o => o.type === 'BUY')
+      .reduce((acc, o) => acc + o.quantity * o.limitPrice, 0);
+  };
+
   const handleSaveName = async () => {
     if (!tempName.trim()) return;
     setIsSaving(true);
     try {
-      await onUpdateName(tempName);
+      await onUpdateName(tempName.trim());
       setIsEditingName(false);
     } finally {
       setIsSaving(false);
     }
   };
 
-  const totalValue = portfolio.balance + calculateHoldingsValue();
+  const holdingsValue = calculateHoldingsValue();
+  const reservedCash = calculateReservedCash();
+  const totalValue = portfolio.balance + reservedCash + holdingsValue;
   const initialValue = 50000; 
   const totalPL = totalValue - initialValue;
   const plPercentage = (totalPL / initialValue) * 100;
+  const openOrders = portfolio.limitOrders || [];
 
   return (
-    <div className="space-y-6">
-      {/* Profile Management Section */}
-      <div className="glass-effect p-6 rounded-[2rem] border border-white/10 flex flex-col md:flex-row justify-between items-center gap-6">
-        <div className="flex items-center gap-6">
-          <div className="w-16 h-16 rounded-full bg-[#2ebd85]/20 border border-[#2ebd85]/30 flex items-center justify-center text-[#2ebd85]">
-            <User size={32} />
+    <div className="max-w-6xl mx-auto space-y-6">
+      {/* Trader Profile Header */}
+      <div className="bg-[#111418] p-6 rounded-2xl border border-[#1c2127] flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-[#2ebd85]/15 border border-[#2ebd85]/30 flex items-center justify-center text-[#2ebd85]">
+            <User size={24} />
           </div>
           <div>
             {isEditingName ? (
               <div className="flex items-center gap-2">
                 <input
                   type="text"
-                  className="bg-[#080a0c] border border-[#2ebd85] rounded-lg px-3 py-1 text-sm font-black uppercase text-white outline-none"
+                  maxLength={50}
+                  className="bg-[#080a0c] border border-[#2ebd85] rounded-lg px-3 py-1 text-sm font-bold text-white outline-none"
                   value={tempName}
                   onChange={(e) => setTempName(e.target.value)}
                   autoFocus
                 />
-                <button onClick={handleSaveName} disabled={isSaving} className="p-1 text-[#2ebd85] hover:bg-[#2ebd85]/10 rounded">
+                <button onClick={handleSaveName} disabled={isSaving} className="p-1.5 text-[#2ebd85] hover:bg-[#2ebd85]/10 rounded">
                   <Check size={16} />
                 </button>
-                <button onClick={() => { setIsEditingName(false); setTempName(user?.displayName || ''); }} className="p-1 text-rose-500 hover:bg-rose-500/10 rounded">
+                <button onClick={() => { setIsEditingName(false); setTempName(user?.displayName || ''); }} className="p-1.5 text-rose-400 hover:bg-rose-500/10 rounded">
                   <X size={16} />
                 </button>
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-black text-white uppercase tracking-tighter">
-                  {user?.displayName || 'Anonymous Trader'}
+                <h2 className="text-lg font-bold text-white tracking-tight">
+                  {user?.displayName || 'Trader Account'}
                 </h2>
-                <button onClick={() => setIsEditingName(true)} className="p-1 text-slate-500 hover:text-white transition">
-                  <Edit2 size={12} />
+                <button onClick={() => setIsEditingName(true)} className="p-1 text-slate-400 hover:text-white transition" title="Edit Display Name">
+                  <Edit2 size={13} />
                 </button>
               </div>
             )}
-            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">
-              Member ID: {user?.uid.substring(0, 8).toUpperCase()}...
+            <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+              <span>Account ID: {user?.uid.substring(0, 8).toUpperCase()}</span>
+              <span aria-hidden="true">·</span>
+              <span>Paper Trading Equity</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-6 text-right">
+          <div>
+            <p className="text-xs text-slate-400">Net Account Equity</p>
+            <p className="text-xl font-mono font-bold text-white tabular-nums">
+              NPR {totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </p>
           </div>
         </div>
+      </div>
 
-        <div className="flex items-center gap-8 border-l border-[#1c2127] pl-8">
-          <div className="text-center">
-            <p className="text-[10px] text-slate-600 font-black uppercase tracking-widest mb-1">Session Rank</p>
-            <p className="text-sm font-black text-white">Advanced</p>
+      {/* KPI Summary Strip */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-[#111418] p-5 rounded-2xl border border-[#1c2127] flex flex-col gap-1.5">
+          <div className="flex justify-between items-center text-slate-400">
+            <span className="text-xs font-medium">Available Cash Balance</span>
+            <Wallet size={16} />
           </div>
-          <div className="text-center">
-            <p className="text-[10px] text-slate-600 font-black uppercase tracking-widest mb-1">Status</p>
-            <p className="text-sm font-black text-[#2ebd85] uppercase">Verified</p>
+          <div className="text-2xl font-mono font-bold text-white tabular-nums">
+            NPR {portfolio.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          {reservedCash > 0 && (
+            <div className="text-[11px] font-mono text-slate-400 tabular-nums">
+              Reserved in Limit Buys: NPR {reservedCash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-[#111418] p-5 rounded-2xl border border-[#1c2127] flex flex-col gap-1.5">
+          <div className="flex justify-between items-center text-slate-400">
+            <span className="text-xs font-medium">Holdings Market Value</span>
+            <ArrowUpRight size={16} />
+          </div>
+          <div className="text-2xl font-mono font-bold text-white tabular-nums">
+            NPR {holdingsValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="text-[11px] text-slate-400">
+            {portfolio.holdings.length} active {portfolio.holdings.length === 1 ? 'position' : 'positions'}
+          </div>
+        </div>
+
+        <div className="bg-[#111418] p-5 rounded-2xl border border-[#1c2127] flex flex-col gap-1.5">
+          <div className="flex justify-between items-center text-slate-400">
+            <span className="text-xs font-medium">Total Return (vs NPR 50,000)</span>
+            {totalPL >= 0 ? <ArrowUpRight className="text-[#2ebd85]" size={16} /> : <ArrowDownRight className="text-[#f6465d]" size={16} />}
+          </div>
+          <div className={`text-2xl font-mono font-bold tabular-nums ${totalPL >= 0 ? 'text-[#2ebd85]' : 'text-[#f6465d]'}`}>
+            {totalPL >= 0 ? '+' : ''}NPR {totalPL.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className={`text-xs font-mono font-semibold tabular-nums ${totalPL >= 0 ? 'text-[#2ebd85]' : 'text-[#f6465d]'}`}>
+            {totalPL >= 0 ? '+' : ''}{plPercentage.toFixed(2)}%
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <div className="glass-effect p-6 rounded-2xl border border-white/10 flex flex-col gap-2">
-          <div className="flex justify-between items-center text-slate-400">
-            <span className="text-sm font-medium">Cash Balance</span>
-            <Wallet size={18} />
-          </div>
-          <div className="text-3xl font-bold">NPR {portfolio.balance.toLocaleString()}</div>
-        </div>
-
-        <div className="glass-effect p-6 rounded-2xl border border-white/10 flex flex-col gap-2">
-          <div className="flex justify-between items-center text-slate-400">
-            <span className="text-sm font-medium">Invested Value</span>
-            <ArrowUpRight size={18} />
-          </div>
-          <div className="text-3xl font-bold">NPR {calculateHoldingsValue().toLocaleString()}</div>
-        </div>
-
-        <div className={`glass-effect p-6 rounded-2xl border ${totalPL >= 0 ? 'border-emerald-500/30' : 'border-rose-500/30'} flex flex-col gap-2`}>
-          <div className="flex justify-between items-center text-slate-400">
-            <span className="text-sm font-medium">Total Returns</span>
-            {totalPL >= 0 ? <ArrowUpRight className="text-emerald-500" size={18} /> : <ArrowDownRight className="text-rose-500" size={18} />}
-          </div>
-          <div className={`text-3xl font-bold ${totalPL >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-            {totalPL >= 0 ? '+' : ''}{totalPL.toLocaleString()} ({plPercentage.toFixed(2)}%)
-          </div>
-        </div>
-      </div>
-
-      <div className="flex gap-4 border-b border-white/10">
+      {/* Navigation Tabs */}
+      <div className="flex gap-6 border-b border-[#1c2127]">
         <button 
           onClick={() => setActiveSubTab('HOLDINGS')}
-          className={`pb-3 px-2 font-semibold transition relative ${activeSubTab === 'HOLDINGS' ? 'text-emerald-400 border-b-2 border-emerald-400' : 'text-slate-500'}`}
+          className={`pb-3 px-1 text-sm font-semibold transition relative whitespace-nowrap ${
+            activeSubTab === 'HOLDINGS' ? 'text-[#2ebd85] border-b-2 border-[#2ebd85]' : 'text-slate-400 hover:text-slate-200'
+          }`}
         >
-          My Holdings
+          Holdings ({portfolio.holdings.length})
+        </button>
+        <button 
+          onClick={() => setActiveSubTab('OPEN_ORDERS')}
+          className={`pb-3 px-1 text-sm font-semibold transition relative whitespace-nowrap ${
+            activeSubTab === 'OPEN_ORDERS' ? 'text-[#2ebd85] border-b-2 border-[#2ebd85]' : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Open Limit Orders ({openOrders.length})
         </button>
         <button 
           onClick={() => setActiveSubTab('HISTORY')}
-          className={`pb-3 px-2 font-semibold transition relative ${activeSubTab === 'HISTORY' ? 'text-emerald-400 border-b-2 border-emerald-400' : 'text-slate-500'}`}
+          className={`pb-3 px-1 text-sm font-semibold transition relative whitespace-nowrap ${
+            activeSubTab === 'HISTORY' ? 'text-[#2ebd85] border-b-2 border-[#2ebd85]' : 'text-slate-400 hover:text-slate-200'
+          }`}
         >
-          Order History
+          Order History ({portfolio.history.length})
         </button>
       </div>
 
-      {activeSubTab === 'HOLDINGS' ? (
-        <div className="glass-effect rounded-2xl overflow-hidden border border-white/5">
+      {/* Tab Content */}
+      {activeSubTab === 'HOLDINGS' && (
+        <div className="bg-[#111418] rounded-2xl overflow-hidden border border-[#1c2127]">
           {portfolio.holdings.length === 0 ? (
-            <div className="p-12 text-center text-slate-500 flex flex-col items-center gap-4">
-              <User size={48} className="opacity-20" />
-              <p>Your portfolio is empty. Go to Market to start trading.</p>
+            <div className="p-12 text-center text-slate-400 flex flex-col items-center gap-3">
+              <User size={36} className="text-slate-600" />
+              <p className="text-sm">Your portfolio has no active equity holdings yet. Place a Market or Limit order in the Terminal tab.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead className="bg-white/5 border-b border-white/5 text-slate-400 text-sm">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-[#080a0c] border-b border-[#1c2127] text-slate-400 text-xs">
                   <tr>
-                    <th className="px-6 py-4">Asset</th>
-                    <th className="px-6 py-4 text-right">Qty</th>
-                    <th className="px-6 py-4 text-right">Avg Price</th>
-                    <th className="px-6 py-4 text-right">Current LTP</th>
-                    <th className="px-6 py-4 text-right">Market Value</th>
-                    <th className="px-6 py-4 text-right">P/L</th>
+                    <th className="px-6 py-3.5 font-semibold">Instrument</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Quantity</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Avg Cost (NPR)</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Live LTP (NPR)</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Market Value</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Unrealized P/L</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-white/5">
+                <tbody className="divide-y divide-[#1c2127]">
                   {portfolio.holdings.map((h) => {
                     const ltp = getStockPrice(h.symbol);
                     const marketVal = h.quantity * ltp;
                     const invested = h.quantity * h.avgPrice;
                     const pl = marketVal - invested;
-                    const plPct = (pl / invested) * 100;
+                    const plPct = invested > 0 ? (pl / invested) * 100 : 0;
 
                     return (
-                      <tr key={h.symbol} className="hover:bg-white/5 transition">
-                        <td className="px-6 py-4 font-bold text-white">{h.symbol}</td>
-                        <td className="px-6 py-4 text-right">{h.quantity}</td>
-                        <td className="px-6 py-4 text-right">{h.avgPrice.toLocaleString()}</td>
-                        <td className="px-6 py-4 text-right">{ltp.toLocaleString()}</td>
-                        <td className="px-6 py-4 text-right font-medium">{marketVal.toLocaleString()}</td>
-                        <td className={`px-6 py-4 text-right font-bold ${pl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                          {pl >= 0 ? '+' : ''}{pl.toLocaleString()} ({plPct.toFixed(2)}%)
+                      <tr key={h.symbol} className="hover:bg-white/[0.02] transition">
+                        <td className="px-6 py-3.5 font-bold text-white">{h.symbol}</td>
+                        <td className="px-6 py-3.5 text-right font-mono tabular-nums">{h.quantity}</td>
+                        <td className="px-6 py-3.5 text-right font-mono tabular-nums">{h.avgPrice.toFixed(2)}</td>
+                        <td className="px-6 py-3.5 text-right font-mono tabular-nums">{ltp.toFixed(2)}</td>
+                        <td className="px-6 py-3.5 text-right font-mono font-semibold tabular-nums">
+                          NPR {marketVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className={`px-6 py-3.5 text-right font-mono font-semibold tabular-nums ${pl >= 0 ? 'text-[#2ebd85]' : 'text-[#f6465d]'}`}>
+                          {pl >= 0 ? '+' : ''}{pl.toFixed(2)} ({pl >= 0 ? '+' : ''}{plPct.toFixed(2)}%)
                         </td>
                       </tr>
                     );
@@ -184,39 +226,105 @@ const PortfolioView: React.FC<PortfolioViewProps> = ({ portfolio, stocks, user, 
             </div>
           )}
         </div>
-      ) : (
-        <div className="glass-effect rounded-2xl overflow-hidden border border-white/5">
-          {portfolio.history.length === 0 ? (
-            <div className="p-12 text-center text-slate-500 flex flex-col items-center gap-4">
-              <History size={48} className="opacity-20" />
-              <p>No trading activity recorded yet.</p>
+      )}
+
+      {activeSubTab === 'OPEN_ORDERS' && (
+        <div className="bg-[#111418] rounded-2xl overflow-hidden border border-[#1c2127]">
+          {openOrders.length === 0 ? (
+            <div className="p-12 text-center text-slate-400 flex flex-col items-center gap-3">
+              <History size={36} className="text-slate-600" />
+              <p className="text-sm">No open limit orders. Pending limit orders automatically execute when live LTP crosses your target price.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead className="bg-white/5 border-b border-white/5 text-slate-400 text-sm">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-[#080a0c] border-b border-[#1c2127] text-slate-400 text-xs">
                   <tr>
-                    <th className="px-6 py-4">Time</th>
-                    <th className="px-6 py-4">Type</th>
-                    <th className="px-6 py-4">Asset</th>
-                    <th className="px-6 py-4 text-right">Qty</th>
-                    <th className="px-6 py-4 text-right">Price</th>
-                    <th className="px-6 py-4 text-right">Total</th>
+                    <th className="px-6 py-3.5 font-semibold">Created</th>
+                    <th className="px-6 py-3.5 font-semibold">Side</th>
+                    <th className="px-6 py-3.5 font-semibold">Instrument</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Quantity</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Limit Price</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Current LTP</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Action</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-white/5 text-slate-300">
+                <tbody className="divide-y divide-[#1c2127]">
+                  {openOrders.map((o) => {
+                    const currentLtp = getStockPrice(o.symbol);
+                    return (
+                      <tr key={o.id} className="hover:bg-white/[0.02] transition">
+                        <td className="px-6 py-3.5 text-xs font-mono text-slate-400 tabular-nums">
+                          {new Date(o.createdAt).toLocaleString()}
+                        </td>
+                        <td className="px-6 py-3.5">
+                          <span className={`font-bold text-xs ${o.type === 'BUY' ? 'text-[#2ebd85]' : 'text-[#f6465d]'}`}>
+                            {o.type} LIMIT
+                          </span>
+                        </td>
+                        <td className="px-6 py-3.5 font-bold text-white">{o.symbol}</td>
+                        <td className="px-6 py-3.5 text-right font-mono tabular-nums">{o.quantity}</td>
+                        <td className="px-6 py-3.5 text-right font-mono font-semibold text-white tabular-nums">
+                          NPR {o.limitPrice.toFixed(2)}
+                        </td>
+                        <td className="px-6 py-3.5 text-right font-mono text-slate-400 tabular-nums">
+                          NPR {currentLtp.toFixed(2)}
+                        </td>
+                        <td className="px-6 py-3.5 text-right">
+                          <button
+                            onClick={() => onCancelLimitOrder(o.id)}
+                            className="px-3 py-1 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 text-xs font-semibold transition"
+                          >
+                            Cancel
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeSubTab === 'HISTORY' && (
+        <div className="bg-[#111418] rounded-2xl overflow-hidden border border-[#1c2127]">
+          {portfolio.history.length === 0 ? (
+            <div className="p-12 text-center text-slate-400 flex flex-col items-center gap-3">
+              <History size={36} className="text-slate-600" />
+              <p className="text-sm">No trading activity recorded yet.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-[#080a0c] border-b border-[#1c2127] text-slate-400 text-xs">
+                  <tr>
+                    <th className="px-6 py-3.5 font-semibold">Timestamp</th>
+                    <th className="px-6 py-3.5 font-semibold">Type</th>
+                    <th className="px-6 py-3.5 font-semibold">Instrument</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Quantity</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Execution Price</th>
+                    <th className="px-6 py-3.5 font-semibold text-right">Total Value</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1c2127] text-slate-300">
                   {portfolio.history.map((tx) => (
-                    <tr key={tx.id} className="hover:bg-white/5 transition">
-                      <td className="px-6 py-4 text-sm text-slate-500">{new Date(tx.timestamp).toLocaleString()}</td>
-                      <td className="px-6 py-4">
-                        <span className={`px-2 py-1 rounded text-xs font-bold ${tx.type === 'BUY' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-rose-500/20 text-rose-500'}`}>
-                          {tx.type}
+                    <tr key={tx.id} className="hover:bg-white/[0.02] transition">
+                      <td className="px-6 py-3.5 text-xs font-mono text-slate-400 tabular-nums">
+                        {new Date(tx.timestamp).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-3.5">
+                        <span className={`text-xs font-bold ${tx.type === 'BUY' ? 'text-[#2ebd85]' : 'text-[#f6465d]'}`}>
+                          {tx.type} {tx.orderType ? `(${tx.orderType})` : ''}
                         </span>
                       </td>
-                      <td className="px-6 py-4 font-bold">{tx.symbol}</td>
-                      <td className="px-6 py-4 text-right">{tx.quantity}</td>
-                      <td className="px-6 py-4 text-right">{tx.price.toLocaleString()}</td>
-                      <td className="px-6 py-4 text-right">{(tx.quantity * tx.price).toLocaleString()}</td>
+                      <td className="px-6 py-3.5 font-bold text-white">{tx.symbol}</td>
+                      <td className="px-6 py-3.5 text-right font-mono tabular-nums">{tx.quantity}</td>
+                      <td className="px-6 py-3.5 text-right font-mono tabular-nums">NPR {tx.price.toFixed(2)}</td>
+                      <td className="px-6 py-3.5 text-right font-mono font-semibold text-white tabular-nums">
+                        NPR {(tx.quantity * tx.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

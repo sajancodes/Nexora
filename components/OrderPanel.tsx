@@ -1,77 +1,180 @@
-
-import React, { useState } from 'react';
-import { Stock, Transaction, Holding } from '../types';
-import { ShoppingCart, Trash2, Clock, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Stock, Transaction, Holding, LimitOrder } from '../types';
+import { Clock, AlertCircle, X, CheckCircle2 } from 'lucide-react';
 
 interface OrderPanelProps {
   stock?: Stock;
   balance: number;
   history: Transaction[];
-  onTrade: (type: 'BUY' | 'SELL', symbol: string, quantity: number, price: number) => void;
+  limitOrders: LimitOrder[];
+  onTrade: (type: 'BUY' | 'SELL', symbol: string, quantity: number, price: number) => Promise<void> | void;
+  onPlaceLimitOrder: (type: 'BUY' | 'SELL', symbol: string, quantity: number, limitPrice: number) => Promise<void> | void;
+  onCancelLimitOrder: (orderId: string) => Promise<void> | void;
   holdings: Holding[];
   isMarketOpen: boolean;
 }
 
-const OrderPanel: React.FC<OrderPanelProps> = ({ stock, balance, history, onTrade, holdings, isMarketOpen }) => {
-  const [tab, setTab] = useState<'MARKET' | 'LIMIT'>('MARKET');
-  const [qty, setQty] = useState<number>(1);
+const OrderPanel: React.FC<OrderPanelProps> = ({
+  stock,
+  balance,
+  history,
+  limitOrders,
+  onTrade,
+  onPlaceLimitOrder,
+  onCancelLimitOrder,
+  holdings,
+  isMarketOpen,
+}) => {
+  const [orderMode, setOrderMode] = useState<'MARKET' | 'LIMIT'>('MARKET');
+  const [bottomTab, setBottomTab] = useState<'OPEN' | 'HISTORY'>('OPEN');
+  const [qty, setQty] = useState<number>(10);
+  const [limitPrice, setLimitPrice] = useState<string>('');
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  if (!stock) return <aside className="w-80 bg-[#111418] border-l border-[#1c2127]"></aside>;
+  useEffect(() => {
+    if (stock) {
+      setLimitPrice(stock.LTP.toFixed(2));
+    }
+  }, [stock?.Symbol]);
 
-  const marginRequired = qty * stock.LTP;
+  if (!stock) return <aside className="w-80 bg-[#111418] border-l border-[#1c2127] shrink-0"></aside>;
+
+  const parsedLimitPrice = parseFloat(limitPrice);
+  const effectivePrice = orderMode === 'LIMIT' ? (isNaN(parsedLimitPrice) ? 0 : parsedLimitPrice) : stock.LTP;
+  const totalAmount = qty * effectivePrice;
   const currentHolding = holdings.find(h => h.symbol === stock.Symbol);
+  const availableShares = currentHolding?.quantity || 0;
 
-  const handleAddQty = (amount: number) => setQty(prev => prev + amount);
+  const showNotice = (type: 'success' | 'error', message: string) => {
+    setFeedback({ type, message });
+    setTimeout(() => setFeedback(null), 3000);
+  };
+
+  const handleOrderSubmit = async (side: 'BUY' | 'SELL') => {
+    if (!isMarketOpen) {
+      showNotice('error', 'Market is currently closed.');
+      return;
+    }
+    if (qty <= 0) {
+      showNotice('error', 'Quantity must be at least 1.');
+      return;
+    }
+    if (orderMode === 'LIMIT' && (isNaN(parsedLimitPrice) || parsedLimitPrice <= 0)) {
+      showNotice('error', 'Enter a valid limit price.');
+      return;
+    }
+    if (side === 'BUY' && balance < totalAmount) {
+      showNotice('error', `Insufficient cash balance (Need NPR ${totalAmount.toLocaleString()}).`);
+      return;
+    }
+    if (side === 'SELL' && availableShares < qty) {
+      showNotice('error', `Insufficient holdings (${availableShares} shares available).`);
+      return;
+    }
+
+    if (orderMode === 'MARKET') {
+      await onTrade(side, stock.Symbol, qty, stock.LTP);
+      showNotice('success', `Executed ${side} ${qty} ${stock.Symbol} @ NPR ${stock.LTP.toFixed(2)}`);
+    } else {
+      // If limit price is already marketable, execute immediately at LTP
+      if ((side === 'BUY' && stock.LTP <= parsedLimitPrice) || (side === 'SELL' && stock.LTP >= parsedLimitPrice)) {
+        await onTrade(side, stock.Symbol, qty, stock.LTP);
+        showNotice('success', `Limit ${side} filled immediately @ NPR ${stock.LTP.toFixed(2)}`);
+      } else {
+        await onPlaceLimitOrder(side, stock.Symbol, qty, parsedLimitPrice);
+        setBottomTab('OPEN');
+        showNotice('success', `Placed ${side} Limit ${qty} ${stock.Symbol} @ NPR ${parsedLimitPrice.toFixed(2)}`);
+      }
+    }
+  };
 
   return (
-    <aside className="w-80 border-l border-[#1c2127] bg-[#111418] flex flex-col overflow-hidden">
-      {/* Order Input */}
-      <div className="p-4 flex flex-col gap-4 border-b border-[#1c2127]">
+    <aside className="w-80 border-l border-[#1c2127] bg-[#111418] flex flex-col overflow-hidden shrink-0">
+      {/* Order Entry Form */}
+      <div className="p-4 flex flex-col gap-3.5 border-b border-[#1c2127]">
         {!isMarketOpen && (
-          <div className="bg-rose-500/10 border border-rose-500/20 p-3 rounded-md flex items-start gap-2">
-            <AlertCircle size={14} className="text-rose-500 mt-0.5 shrink-0" />
-            <div className="text-[10px] text-rose-200 leading-tight">
-              <span className="font-black uppercase block mb-0.5">Market Closed</span>
-              Trading is available Sunday to Thursday, from 11:00 AM to 3:00 PM.
+          <div className="bg-rose-500/10 border border-rose-500/20 p-3 rounded-lg flex items-start gap-2">
+            <AlertCircle size={14} className="text-rose-400 mt-0.5 shrink-0" />
+            <div className="text-xs text-rose-200 leading-snug">
+              <span className="font-bold block">Market Closed</span>
+              Ask an administrator to open the market session to execute orders.
             </div>
           </div>
         )}
 
-        <div className="flex bg-[#080a0c] p-1 rounded-md">
+        {/* Market / Limit Mode Switcher */}
+        <div className="flex bg-[#080a0c] p-1 rounded-lg border border-[#1c2127]">
           <button 
-            onClick={() => setTab('MARKET')}
-            className={`flex-1 py-1.5 text-[10px] font-black rounded transition ${tab === 'MARKET' ? 'bg-[#2ebd85] text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+            onClick={() => setOrderMode('MARKET')}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap ${
+              orderMode === 'MARKET' ? 'bg-[#2ebd85] text-[#080a0c] font-bold' : 'text-slate-400 hover:text-slate-200'
+            }`}
           >
-            MARKET
+            Market Order
           </button>
           <button 
-            onClick={() => setTab('LIMIT')}
-            className={`flex-1 py-1.5 text-[10px] font-black rounded transition ${tab === 'LIMIT' ? 'bg-[#2ebd85] text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+            onClick={() => {
+              setOrderMode('LIMIT');
+              if (!limitPrice) setLimitPrice(stock.LTP.toFixed(2));
+            }}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap ${
+              orderMode === 'LIMIT' ? 'bg-[#2ebd85] text-[#080a0c] font-bold' : 'text-slate-400 hover:text-slate-200'
+            }`}
           >
-            LIMIT
+            Limit Order
           </button>
         </div>
 
-        <div className={`space-y-3 transition-opacity duration-300 ${!isMarketOpen ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
+        <div className={`space-y-3 transition-opacity duration-200 ${!isMarketOpen ? 'opacity-50 pointer-events-none' : ''}`}>
+          {/* Target Limit Price Input (shown when LIMIT is active) */}
+          {orderMode === 'LIMIT' && (
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <label className="text-xs font-medium text-slate-400">Limit Price (NPR)</label>
+                <button
+                  type="button"
+                  onClick={() => setLimitPrice(stock.LTP.toFixed(2))}
+                  className="text-[11px] text-[#2ebd85] hover:underline font-mono tabular-nums"
+                >
+                  LTP: {stock.LTP.toFixed(2)}
+                </button>
+              </div>
+              <input
+                type="number"
+                step="0.1"
+                min="0.1"
+                value={limitPrice}
+                onChange={(e) => setLimitPrice(e.target.value)}
+                disabled={!isMarketOpen}
+                className="w-full bg-[#080a0c] border border-[#1c2127] rounded-lg px-3 py-2 text-sm font-mono font-semibold text-white tabular-nums focus:outline-none focus:border-[#2ebd85]"
+              />
+            </div>
+          )}
+
+          {/* Quantity Input */}
           <div>
-            <div className="flex justify-between items-center mb-1.5">
-              <label className="text-[10px] font-black text-slate-600 uppercase">Quantity</label>
-              <span className="text-[10px] text-slate-500 font-bold">Available: {currentHolding?.quantity || 0}</span>
+            <div className="flex justify-between items-center mb-1">
+              <label className="text-xs font-medium text-slate-400">Quantity (Shares)</label>
+              <span className="text-[11px] text-slate-400 font-mono tabular-nums">
+                Held: {availableShares}
+              </span>
             </div>
             <input 
               type="number"
-              className="w-full bg-[#080a0c] border border-[#1c2127] rounded-md px-3 py-2 text-sm font-bold focus:outline-none focus:border-[#2ebd85]"
+              min="1"
+              className="w-full bg-[#080a0c] border border-[#1c2127] rounded-lg px-3 py-2 text-sm font-mono font-semibold text-white tabular-nums focus:outline-none focus:border-[#2ebd85]"
               value={qty}
               onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 0))}
               disabled={!isMarketOpen}
             />
-            <div className="grid grid-cols-4 gap-2 mt-2">
-              {[+1, +5, +10, +50].map(val => (
+            <div className="grid grid-cols-4 gap-1.5 mt-2">
+              {[10, 25, 50, 100].map(val => (
                 <button 
                   key={val}
-                  onClick={() => handleAddQty(val)}
+                  type="button"
+                  onClick={() => setQty(prev => prev + val)}
                   disabled={!isMarketOpen}
-                  className="bg-[#080a0c] border border-[#1c2127] py-1 text-[10px] font-bold text-slate-400 rounded hover:bg-[#1c2127] transition disabled:opacity-50"
+                  className="bg-[#080a0c] border border-[#1c2127] py-1 text-xs font-mono font-medium text-slate-300 rounded hover:bg-[#1c2127] transition disabled:opacity-50"
                 >
                   +{val}
                 </button>
@@ -79,57 +182,133 @@ const OrderPanel: React.FC<OrderPanelProps> = ({ stock, balance, history, onTrad
             </div>
           </div>
 
-          <div className="bg-[#080a0c]/50 p-3 rounded-md border border-[#1c2127] flex justify-between items-center">
-            <span className="text-[10px] font-black text-slate-600 uppercase">Margin Required</span>
-            <span className="text-sm font-bold text-[#2ebd85]">NPR {marginRequired.toLocaleString()}</span>
+          {/* Summary Row */}
+          <div className="bg-[#080a0c] p-3 rounded-lg border border-[#1c2127] space-y-1">
+            <div className="flex justify-between items-center text-xs">
+              <span className="text-slate-400">Estimated Total</span>
+              <span className="font-mono font-bold text-[#2ebd85] tabular-nums">
+                NPR {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="flex justify-between items-center text-[11px]">
+              <span className="text-slate-500">Available Cash</span>
+              <span className="font-mono text-slate-300 tabular-nums">
+                NPR {balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
           </div>
 
-          <div className="flex flex-col gap-2 pt-2">
-            <button 
-              onClick={() => onTrade('BUY', stock.Symbol, qty, stock.LTP)}
-              disabled={!isMarketOpen}
-              className="w-full bg-[#2ebd85] hover:bg-[#27b07a] text-white font-black py-3 rounded-md transition transform active:scale-95 text-xs shadow-lg shadow-[#2ebd85]/10 disabled:bg-slate-700 disabled:text-slate-500 disabled:shadow-none"
+          {feedback && (
+            <div
+              className={`p-2.5 rounded-lg text-xs font-medium flex items-center gap-2 ${
+                feedback.type === 'success'
+                  ? 'bg-[#2ebd85]/15 border border-[#2ebd85]/30 text-[#2ebd85]'
+                  : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+              }`}
             >
-              BUY {stock.Symbol}
+              {feedback.type === 'success' ? <CheckCircle2 size={14} className="shrink-0" /> : <AlertCircle size={14} className="shrink-0" />}
+              <span className="leading-tight">{feedback.message}</span>
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <button 
+              type="button"
+              onClick={() => handleOrderSubmit('BUY')}
+              disabled={!isMarketOpen}
+              className="w-full bg-[#2ebd85] hover:bg-[#27b07a] text-[#080a0c] font-bold py-2.5 px-4 rounded-lg transition active:scale-[0.98] text-xs disabled:bg-slate-800 disabled:text-slate-500 whitespace-nowrap"
+            >
+              Buy {stock.Symbol}
             </button>
             <button 
-              onClick={() => onTrade('SELL', stock.Symbol, qty, stock.LTP)}
+              type="button"
+              onClick={() => handleOrderSubmit('SELL')}
               disabled={!isMarketOpen}
-              className="w-full bg-transparent border border-[#f6465d] text-[#f6465d] hover:bg-[#f6465d] hover:text-white font-black py-3 rounded-md transition transform active:scale-95 text-xs disabled:border-slate-700 disabled:text-slate-700 disabled:hover:bg-transparent"
+              className="w-full bg-[#f6465d] hover:bg-[#e03e53] text-white font-bold py-2.5 px-4 rounded-lg transition active:scale-[0.98] text-xs disabled:bg-slate-800 disabled:text-slate-500 whitespace-nowrap"
             >
-              SELL {stock.Symbol}
+              Sell {stock.Symbol}
             </button>
           </div>
         </div>
-
-        {!isMarketOpen && (
-          <div className="text-[9px] text-center text-slate-600 font-bold uppercase tracking-wider">
-            Terminal in Read-Only Mode
-          </div>
-        )}
       </div>
 
-      {/* Order History */}
-      <div className="flex-1 flex flex-col overflow-hidden bg-[#080a0c]/30">
-        <div className="p-3 border-b border-[#1c2127] flex items-center gap-2">
-          <Clock size={14} className="text-slate-500" />
-          <span className="text-[10px] font-black text-slate-500 uppercase">Order History</span>
+      {/* Bottom Open Orders & Order History Section */}
+      <div className="flex-1 flex flex-col overflow-hidden bg-[#080a0c]/40">
+        <div className="px-3 py-2 border-b border-[#1c2127] flex items-center gap-2 bg-[#0b0e11]">
+          <button
+            onClick={() => setBottomTab('OPEN')}
+            className={`px-2.5 py-1 rounded text-xs font-semibold transition whitespace-nowrap ${
+              bottomTab === 'OPEN' ? 'bg-[#1c2127] text-white' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Open Orders ({limitOrders.length})
+          </button>
+          <button
+            onClick={() => setBottomTab('HISTORY')}
+            className={`px-2.5 py-1 rounded text-xs font-semibold transition whitespace-nowrap flex items-center gap-1.5 ${
+              bottomTab === 'HISTORY' ? 'bg-[#1c2127] text-white' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Clock size={12} />
+            <span>History ({history.length})</span>
+          </button>
         </div>
+
         <div className="flex-1 overflow-y-auto custom-scrollbar">
-          {history.length === 0 ? (
-            <div className="p-12 text-center text-slate-700 text-[10px] italic font-bold">NO ORDERS EXECUTED</div>
+          {bottomTab === 'OPEN' ? (
+            limitOrders.length === 0 ? (
+              <div className="p-8 text-center text-slate-500 text-xs">
+                No pending limit orders. Switch to Limit Order above to set a target price.
+              </div>
+            ) : (
+              limitOrders.map(order => (
+                <div key={order.id} className="p-3 border-b border-[#1c2127]/60 hover:bg-white/[0.02] transition flex justify-between items-center">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-bold ${order.type === 'BUY' ? 'text-[#2ebd85]' : 'text-[#f6465d]'}`}>
+                        {order.type} LIMIT
+                      </span>
+                      <span className="text-xs font-bold text-white">{order.symbol}</span>
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400 tabular-nums mt-0.5">
+                      {order.quantity} shares @ NPR {order.limitPrice.toFixed(2)}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => onCancelLimitOrder(order.id)}
+                    title="Cancel Limit Order"
+                    className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-md transition"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))
+            )
+          ) : history.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 text-xs">
+              No executed trades recorded yet.
+            </div>
           ) : (
             history.map(tx => (
-              <div key={tx.id} className="p-3 border-b border-[#1c2127]/50 hover:bg-white/5 transition group">
-                <div className="flex justify-between items-start mb-1">
-                  <span className={`text-[10px] font-bold px-1 rounded ${tx.type === 'BUY' ? 'bg-[#2ebd85]/20 text-[#2ebd85]' : 'bg-[#f6465d]/20 text-[#f6465d]'}`}>
-                    {tx.type}
+              <div key={tx.id} className="p-3 border-b border-[#1c2127]/60 hover:bg-white/[0.02] transition">
+                <div className="flex justify-between items-center mb-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-xs font-bold ${tx.type === 'BUY' ? 'text-[#2ebd85]' : 'text-[#f6465d]'}`}>
+                      {tx.type}
+                    </span>
+                    <span className="text-xs font-bold text-slate-200">{tx.symbol}</span>
+                    {tx.orderType === 'LIMIT' && (
+                      <span className="text-[10px] text-slate-400">· Limit</span>
+                    )}
+                  </div>
+                  <span className="text-[10px] font-mono text-slate-500 tabular-nums">
+                    {new Date(tx.timestamp).toLocaleTimeString()}
                   </span>
-                  <span className="text-[9px] text-slate-600">{new Date(tx.timestamp).toLocaleTimeString()}</span>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-bold text-slate-200">{tx.symbol}</span>
-                  <span className="text-xs text-slate-400">{tx.quantity} @ {tx.price.toLocaleString()}</span>
+                <div className="flex justify-between items-center text-[11px] font-mono text-slate-400 tabular-nums">
+                  <span>{tx.quantity} shares @ {tx.price.toFixed(2)}</span>
+                  <span className="text-slate-300 font-semibold">NPR {(tx.quantity * tx.price).toLocaleString()}</span>
                 </div>
               </div>
             ))

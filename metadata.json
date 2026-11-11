@@ -1,5 +1,8 @@
 {
   "name": "Nexora - Pro Paper Trading",
   "description": "A high-performance paper trading platform for the Nexora Stock Market with AI-powered insights and portfolio management.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
